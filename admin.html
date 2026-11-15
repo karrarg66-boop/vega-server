@@ -1,0 +1,78 @@
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VEGA Admin</title>
+<style>
+body {
+  margin: 0;
+  background: #10101d;
+  color: white;
+  font-family: Arial, sans-serif;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
+.panel {
+  background: #1c1b30;
+  padding: 30px;
+  border-radius: 20px;
+  width: min(85%, 350px);
+  text-align: center;
+}
+h1 { color: #ad8aff; }
+input, button {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px;
+  margin-top: 12px;
+  border-radius: 10px;
+  border: 0;
+}
+button {
+  background: #8755ff;
+  color: white;
+  font-weight: bold;
+}
+#error { color: #ff8585; }
+</style>
+</head>
+<body>
+<div class="panel">
+  <h1>VEGA</h1>
+  <p>لوحة إدارة الشبكة</p>
+  <form id="loginForm">
+    <input id="username" placeholder="اسم المستخدم" required>
+    <input id="password" type="password" placeholder="كلمة المرور" required>
+    <button type="submit">تسجيل الدخول</button>
+  </form>
+  <p id="error"></p>
+</div>
+<script>
+document.getElementById("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const error = document.getElementById("error");
+  error.textContent = "جاري التحقق...";
+  try {
+    const response = await fetch("/api/login", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        username: document.getElementById("username").value,
+        password: document.getElementById("password").value
+      })
+    });
+    if (!response.ok) throw new Error("فشل تسجيل الدخول");
+    const data = await response.json();
+    if (data.role !== "admin") throw new Error("هذا الدخول للمدير فقط");
+    error.textContent = "نجح الدخول! نجهز لوحة التحكم بالخطوة الجاية.";
+    document.getElementById("password").value = "";
+  } catch (err) {
+    error.textContent = err.message;
+  }
+};
+</script>
+</body>
+</html>
