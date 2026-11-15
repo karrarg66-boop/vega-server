@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 import jwt
 from cryptography.fernet import Fernet
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from pydantic import BaseModel, Field
 
 DB = os.getenv('VEGA_DB', '/tmp/vega.db')
@@ -29,6 +29,21 @@ def setup():
         CREATE TABLE IF NOT EXISTS devices(id INTEGER PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', host TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 8729, router_user TEXT NOT NULL, router_password_enc TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS assignments(user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE, PRIMARY KEY(user_id,device_id));
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, actor_id INTEGER, action TEXT NOT NULL, target TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS password_recovery (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            username TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_recovery_username_time ON password_recovery(username, created_at);
+        CREATE TABLE IF NOT EXISTS recovery_rate_limits (
+            rate_key TEXT PRIMARY KEY,
+            last_requested INTEGER NOT NULL
+        );
         ''')
         admin=os.getenv('VEGA_INITIAL_ADMIN','')
         pw=os.getenv('VEGA_INITIAL_ADMIN_PASSWORD','')
@@ -249,6 +264,58 @@ def logs(a=Depends(admin)):
 from fastapi.responses import FileResponse
 from pathlib import Path
 
-@app.get("/admin", include_in_schema=False)
+@app.get('/admin', include_in_schema=False)
 def admin_page():
-    return FileResponse(Path(__file__).resolve().parent / "admin.html")
+    return FileResponse(Path(__file__).resolve().parent / 'admin.html')
+
+# VEGA V13: viewer password recovery requests
+class RecoveryRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64, pattern=r'^[a-zA-Z0-9_.-]+$')
+    full_name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(min_length=7, max_length=20, pattern=r'^\+?[0-9\s()\-]{7,20}$')
+
+class ResolveRecovery(BaseModel):
+    password: str = Field(min_length=10, max_length=128)
+
+@app.post('/api/password-recovery', status_code=200)
+def request_recovery(body: RecoveryRequest):
+    username = body.username.strip()
+    name = body.full_name.strip()
+    phone = body.phone.strip()
+    if not name or not phone:
+        raise HTTPException(400, 'Invalid request')
+    now = int(time.time())
+    # Shared DB throttling: a username may submit at most once per 15 minutes.
+    # Generic responses avoid disclosing whether an account exists.
+    rate_key = hmac.new(SECRET.encode(), ('recovery:'+username.lower()).encode(), hashlib.sha256).hexdigest()
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        last = c.execute('SELECT last_requested FROM recovery_rate_limits WHERE rate_key=?', (rate_key,)).fetchone()
+        if last is None or now - last['last_requested'] >= 900:
+            c.execute('INSERT INTO recovery_rate_limits(rate_key,last_requested) VALUES(?,?) ON CONFLICT(rate_key) DO UPDATE SET last_requested=excluded.last_requested', (rate_key,now))
+            user = c.execute("SELECT id FROM users WHERE username=? AND role='viewer' AND enabled=1", (username,)).fetchone()
+            if user:
+                pending = c.execute("SELECT 1 FROM password_recovery WHERE user_id=? AND status='pending' LIMIT 1", (user['id'],)).fetchone()
+                if not pending:
+                    c.execute('INSERT INTO password_recovery(user_id,username,full_name,phone) VALUES(?,?,?,?)', (user['id'],username,name,phone))
+    return {'ok':True,'message':'If the account is eligible, the request has been received.'}
+
+@app.get('/api/admin/password-recovery')
+def list_recovery(a=Depends(admin)):
+    with db() as c:
+        rows=c.execute('SELECT id,username,full_name,phone,status,created_at,resolved_at FROM password_recovery ORDER BY id DESC LIMIT 100').fetchall()
+        return [dict(r) for r in rows]
+
+@app.post('/api/admin/password-recovery/{request_id}/resolve')
+def resolve_recovery(request_id:int,body:ResolveRecovery,a=Depends(admin)):
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        request=c.execute("SELECT * FROM password_recovery WHERE id=? AND status='pending'",(request_id,)).fetchone()
+        if not request: raise HTTPException(404,'Pending request not found')
+        user=c.execute("SELECT id FROM users WHERE id=? AND role='viewer' AND enabled=1",(request['user_id'],)).fetchone()
+        if not user: raise HTTPException(404,'User unavailable')
+        # Administrator must verify the requester's identity outside this API before reset.
+        c.execute('UPDATE users SET password_hash=? WHERE id=?',(hash_password(body.password),user['id']))
+        c.execute("UPDATE password_recovery SET status='resolved',resolved_at=CURRENT_TIMESTAMP WHERE id=?",(request_id,))
+        audit(c,a['id'],'resolve_password_recovery',request_id)
+    return {'ok':True}
