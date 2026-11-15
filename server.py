@@ -8,7 +8,7 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel, Field
 
-DB = os.getenv('VEGA_DB', 'vega.db')
+DB = os.getenv('VEGA_DB', '/tmp/vega.db')
 SECRET = os.getenv('VEGA_JWT_SECRET', '')
 FERNET_KEY = os.getenv('VEGA_ENCRYPTION_KEY', '')
 if not SECRET or len(SECRET)<32 or not FERNET_KEY:
