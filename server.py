@@ -319,3 +319,8 @@ def resolve_recovery(request_id:int,body:ResolveRecovery,a=Depends(admin)):
         c.execute("UPDATE password_recovery SET status='resolved',resolved_at=CURRENT_TIMESTAMP WHERE id=?",(request_id,))
         audit(c,a['id'],'resolve_password_recovery',request_id)
     return {'ok':True}
+
+
+@app.get('/app', include_in_schema=False)
+def viewer_app():
+    return FileResponse(Path(__file__).resolve().parent / 'app.html', media_type='text/html', headers={'Cache-Control':'no-store'})
