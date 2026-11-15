@@ -245,3 +245,10 @@ def status(device_id:int,u=Depends(current)):
 @app.get('/api/admin/audit')
 def logs(a=Depends(admin)):
     with db() as c: return [dict(r) for r in c.execute('SELECT id,actor_id,action,target,created_at FROM audit ORDER BY id DESC LIMIT 100')]
+
+from fastapi.responses import FileResponse
+from pathlib import Path
+
+@app.get("/admin", include_in_schema=False)
+def admin_page():
+    return FileResponse(Path(__file__).resolve().parent / "admin.html")
