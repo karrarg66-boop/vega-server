@@ -1,78 +1,19 @@
-
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>VEGA Admin</title>
-<style>
-body {
-  margin: 0;
-  background: #10101d;
-  color: white;
-  font-family: Arial, sans-serif;
-  display: grid;
-  place-items: center;
-  min-height: 100vh;
-}
-.panel {
-  background: #1c1b30;
-  padding: 30px;
-  border-radius: 20px;
-  width: min(85%, 350px);
-  text-align: center;
-}
-h1 { color: #ad8aff; }
-input, button {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 14px;
-  margin-top: 12px;
-  border-radius: 10px;
-  border: 0;
-}
-button {
-  background: #8755ff;
-  color: white;
-  font-weight: bold;
-}
-#error { color: #ff8585; }
-</style>
-</head>
-<body>
-<div class="panel">
-  <h1>VEGA</h1>
-  <p>لوحة إدارة الشبكة</p>
-  <form id="loginForm">
-    <input id="username" placeholder="اسم المستخدم" required>
-    <input id="password" type="password" placeholder="كلمة المرور" required>
-    <button type="submit">تسجيل الدخول</button>
-  </form>
-  <p id="error"></p>
-</div>
+<!doctype html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VEGA | Admin</title><style>
+:root{color-scheme:dark;font-family:system-ui,Tahoma,Arial;background:#0c0b18;color:#f4f1ff}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top right,#2d1859,#0c0b18 55%);min-height:100vh}.wrap{max-width:1050px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:25px}h1{margin:0;color:#b995ff;letter-spacing:3px}h2{font-size:19px;margin:0 0 16px}.muted{color:#b7b1cc;font-size:13px}.card{background:#1b1930;border:1px solid #3a3058;border-radius:18px;padding:22px;margin-bottom:18px;box-shadow:0 12px 35px #0002}.login{max-width:400px;margin:12vh auto}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px}.grid .card{margin:0}input,select{width:100%;padding:13px;border:1px solid #51446f;background:#100f20;color:white;border-radius:10px;margin:7px 0 13px;font:inherit}button{border:0;border-radius:10px;background:#8554ed;color:white;padding:12px 18px;font:inherit;font-weight:700;cursor:pointer}button.secondary{background:#39324f}button:disabled{opacity:.6}label{font-size:13px;color:#d4ccec}ul{padding-right:20px}li{padding:9px 0;border-bottom:1px solid #39324f;overflow-wrap:anywhere}.error{color:#ff9d9d;min-height:1.4em}.success{color:#a9e9bd;min-height:1.4em}.hidden{display:none!important}.pill{background:#33264f;border-radius:99px;padding:6px 10px;font-size:12px}footer{margin:25px 0;text-align:center;color:#aaa0c1;font-size:12px}</style></head><body>
+<div class="wrap"><section id="login" class="card login"><h1>VEGA</h1><p class="muted">لوحة إدارة الشبكة</p><form id="loginForm"><label for="username">اسم المستخدم</label><input id="username" autocomplete="username" required><label for="password">كلمة المرور</label><input id="password" type="password" autocomplete="current-password" required><button type="submit">تسجيل الدخول</button></form><p id="loginMsg" class="error" role="alert"></p></section>
+<main id="dashboard" class="hidden"><header><div><h1>VEGA</h1><div class="muted">Network Admin Dashboard</div></div><div><span class="pill" id="welcome">المدير</span> <button id="logout" class="secondary">خروج</button></div></header><div class="card"><h2>نظرة عامة</h2><p class="muted">إدارة أجهزة المايكروتك والمستخدمين. هذا إصدار تجريبي؛ لا تدخل بيانات راوتر حقيقي قبل تأمين قاعدة البيانات.</p><button id="refresh" class="secondary">تحديث البيانات</button><p id="globalMsg" role="status"></p></div>
+<div class="grid"><section class="card"><h2>الأجهزة</h2><ul id="devices"></ul><form id="deviceForm"><h2>إضافة جهاز</h2><label>اسم الجهاز</label><input name="name" required maxlength="120" placeholder="CCR1036"><label>الموديل</label><input name="model" maxlength="100" placeholder="MikroTik CCR1036"><label>عنوان الجهاز (DNS أو IP خاص)</label><input name="host" required placeholder="router.example.internal"><label>منفذ API TLS</label><input name="port" type="number" min="1" max="65535" value="8729" required><label>اسم مستخدم RouterOS</label><input name="router_user" required autocomplete="off"><label>كلمة مرور RouterOS</label><input name="router_password" type="password" required autocomplete="new-password"><button type="submit">إضافة الجهاز</button><p id="deviceMsg" role="status"></p></form></section>
+<section class="card"><h2>حسابات المراقبين</h2><ul id="users"></ul><form id="userForm"><h2>إضافة مراقب</h2><label>الاسم</label><input name="full_name" required maxlength="120"><label>اسم المستخدم</label><input name="username" required minlength="3" maxlength="64" pattern="[a-zA-Z0-9_.-]+"><label>كلمة المرور (10 أحرف على الأقل)</label><input name="password" type="password" minlength="10" required autocomplete="new-password"><label>الأجهزة المسموحة (اضغط Ctrl للاختيار المتعدد على الكمبيوتر)</label><select id="deviceSelect" multiple size="4" aria-label="الأجهزة المسموحة"></select><button type="submit">إنشاء مراقب</button><p id="userMsg" role="status"></p></form></section></div><footer>VEGA Network Monitor — By Karrar</footer></main></div>
 <script>
-document.getElementById("loginForm").onsubmit = async (e) => {
-  e.preventDefault();
-  const error = document.getElementById("error");
-  error.textContent = "جاري التحقق...";
-  try {
-    const response = await fetch("/api/login", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        username: document.getElementById("username").value,
-        password: document.getElementById("password").value
-      })
-    });
-    if (!response.ok) throw new Error("فشل تسجيل الدخول");
-    const data = await response.json();
-    if (data.role !== "admin") throw new Error("هذا الدخول للمدير فقط");
-    error.textContent = "نجح الدخول! نجهز لوحة التحكم بالخطوة الجاية.";
-    document.getElementById("password").value = "";
-  } catch (err) {
-    error.textContent = err.message;
-  }
-};
-</script>
-</body>
-</html>
+(()=>{'use strict';let token='';const $=id=>document.getElementById(id);const set=(id,msg,ok=false)=>{const el=$(id);el.textContent=msg;el.className=ok?'success':'error'};
+async function api(path,options={}){const headers={'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})};let res;try{res=await fetch(path,{...options,headers:{...headers,...options.headers}})}catch{throw Error('تعذّر الاتصال بالسيرفر')}let data;try{data=await res.json()}catch{data=null}if(!res.ok)throw Error((data&&typeof data.detail==='string'&&data.detail)||'خطأ من السيرفر ('+res.status+')');return data}
+function addItem(list,label){const li=document.createElement('li');li.textContent=label;list.appendChild(li)}
+async function load(){const [devices,users]=await Promise.all([api('/api/admin/devices'),api('/api/admin/users')]);$('devices').replaceChildren();$('users').replaceChildren();$('deviceSelect').replaceChildren();for(const d of devices){addItem($('devices'),`${d.name} — ${d.model||'MikroTik'} — ${d.enabled?'مفعّل':'معطّل'}`);const opt=document.createElement('option');opt.value=String(d.id);opt.textContent=d.name;$('deviceSelect').appendChild(opt)}for(const u of users)addItem($('users'),`${u.full_name} (${u.username}) — ${u.enabled?'مفعّل':'معطّل'} — ${u.device_ids.length} أجهزة`);if(!devices.length)addItem($('devices'),'لا توجد أجهزة');if(!users.length)addItem($('users'),'لا يوجد مراقبون');set('globalMsg','تم تحديث البيانات',true)}
+function logout(){token='';$('dashboard').classList.add('hidden');$('login').classList.remove('hidden');$('password').value='';set('loginMsg','')}
+$('logout').onclick=logout;$('refresh').onclick=()=>load().catch(e=>set('globalMsg',e.message));
+$('loginForm').onsubmit=async e=>{e.preventDefault();set('loginMsg','جاري تسجيل الدخول...');try{const d=await api('/api/login',{method:'POST',body:JSON.stringify({username:$('username').value,password:$('password').value})});$('password').value='';if(d.role!=='admin')throw Error('هذه الصفحة للمدير فقط');token=d.access_token;const me=await api('/api/me');$('welcome').textContent=me.full_name||me.username;$('login').classList.add('hidden');$('dashboard').classList.remove('hidden');await load()}catch(err){set('loginMsg',err.message);if(!$('dashboard').classList.contains('hidden'))set('globalMsg',err.message)}};
+$('deviceForm').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const d=Object.fromEntries(new FormData(form));d.port=Number(d.port);set('deviceMsg','جاري الحفظ...');try{await api('/api/admin/devices',{method:'POST',body:JSON.stringify(d)});form.reset();set('deviceMsg','تمت الإضافة',true);await load()}catch(err){set('deviceMsg',err.message)}};
+$('userForm').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget;const d=Object.fromEntries(new FormData(form));d.device_ids=Array.from($('deviceSelect').selectedOptions,o=>Number(o.value));d.enabled=true;set('userMsg','جاري الحفظ...');try{await api('/api/admin/users',{method:'POST',body:JSON.stringify(d)});form.reset();set('userMsg','تم إنشاء المراقب',true);await load()}catch(err){set('userMsg',err.message)}};
+})();
+</script></body></html>
