@@ -37,7 +37,13 @@ def setup():
             c.execute('INSERT INTO users(full_name,username,password_hash,role) VALUES(?,?,?,?)',('Administrator',admin,hash_password(pw),'admin'))
 
 @app.on_event('startup')
-def startup(): setup()
+def startup():
+    setup()
+
+@app.middleware('http')
+async def initialize_database(request, call_next):
+    setup()
+    return await call_next(request)
 
 def hash_password(password):
     salt=secrets.token_bytes(16)
