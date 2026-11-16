@@ -40,6 +40,11 @@ def setup():
             resolved_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_recovery_username_time ON password_recovery(username, created_at);
+        CREATE TABLE IF NOT EXISTS agent_snapshots (
+            device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+            payload TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS recovery_rate_limits (
             rate_key TEXT PRIMARY KEY,
             last_requested INTEGER NOT NULL
@@ -104,6 +109,15 @@ class UpdateAssignments(BaseModel):
     device_ids:list[int]
 class PasswordChange(BaseModel):
     password:str=Field(min_length=10,max_length=128)
+class NewAgentDevice(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    model: str = Field(default='CCR1036', max_length=100)
+
+class AgentSnapshot(BaseModel):
+    device_id: int = Field(ge=1)
+    resource: dict = Field(default_factory=dict)
+    interfaces: list[dict] = Field(default_factory=list, max_length=128)
+
 class NewDevice(BaseModel):
     name:str=Field(min_length=1,max_length=120)
     model:str=Field(default='',max_length=100)
@@ -184,6 +198,52 @@ def add_device(body:NewDevice,a=Depends(admin)):
         audit(c,a['id'],'create_device',cur.lastrowid)
     return {'id':cur.lastrowid,'name':body.name}
 
+@app.post('/api/admin/agent-devices', status_code=201)
+def add_agent_device(body:NewAgentDevice, a=Depends(admin)):
+    # Dedicated agent device. No MikroTik password is stored on the cloud server.
+    with db() as c:
+        cur=c.execute(
+            'INSERT INTO devices(name,model,host,port,router_user,router_password_enc) VALUES(?,?,?,?,?,?)',
+            (body.name,body.model,'vega-agent',8729,'vega-agent',crypt.encrypt(secrets.token_urlsafe(32).encode()).decode())
+        )
+        audit(c,a['id'],'create_agent_device',cur.lastrowid)
+        return {'id':cur.lastrowid,'name':body.name}
+
+@app.post('/api/agent/snapshot')
+def receive_agent_snapshot(body:AgentSnapshot, authorization:str=Header(default='')):
+    # Set VEGA_AGENT_TOKEN in hosting environment; never put it in GitHub.
+    expected=os.getenv('VEGA_AGENT_TOKEN','')
+    if len(expected)<32:
+        raise HTTPException(503,'Agent ingestion not configured')
+    supplied=authorization[7:] if authorization.startswith('Bearer ') else ''
+    if not hmac.compare_digest(supplied,expected):
+        raise HTTPException(401,'Invalid agent credentials')
+    with db() as c:
+        device=c.execute(
+            "SELECT id FROM devices WHERE id=? AND host='vega-agent' AND enabled=1",
+            (body.device_id,)
+        ).fetchone()
+        if not device: raise HTTPException(404,'Agent device unavailable')
+        # Strict field allowlists: prevent uploading secrets, config or subscriber data.
+        resource_keys={'board-name','version','cpu-load','free-memory','total-memory',
+                       'uptime','cpu-count','cpu-frequency','architecture-name',
+                       'platform','free-hdd-space','total-hdd-space'}
+        interface_keys={'name','type','running','disabled','actual-mtu',
+                        'rx-byte','tx-byte','rx-packet','tx-packet','comment'}
+        resource={k:v for k,v in body.resource.items()
+                  if k in resource_keys and isinstance(v,(str,int,float,bool))}
+        interfaces=[{k:v for k,v in entry.items()
+                     if k in interface_keys and isinstance(v,(str,int,float,bool))}
+                    for entry in body.interfaces if isinstance(entry,dict)]
+        payload=json.dumps({'resource':resource,'interfaces':interfaces},ensure_ascii=False)
+        if len(payload)>100_000: raise HTTPException(413,'Snapshot too large')
+        c.execute(
+            'INSERT INTO agent_snapshots(device_id,payload,updated_at) VALUES(?,?,?) '
+            'ON CONFLICT(device_id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at',
+            (body.device_id,payload,int(time.time()))
+        )
+    return {'ok':True}
+
 @app.get('/api/devices')
 def my_devices(u=Depends(current)):
     with db() as c:
@@ -254,6 +314,16 @@ def status(device_id:int,u=Depends(current)):
         if u['role']=='admin': row=c.execute('SELECT * FROM devices WHERE id=? AND enabled=1',(device_id,)).fetchone()
         else: row=c.execute('SELECT d.* FROM devices d JOIN assignments a ON a.device_id=d.id WHERE d.id=? AND a.user_id=? AND d.enabled=1',(device_id,u['id'])).fetchone()
     if not row: raise HTTPException(404,'Device unavailable')
+    if row['host']=='vega-agent':
+        with db() as c:
+            snapshot=c.execute(
+                'SELECT payload,updated_at FROM agent_snapshots WHERE device_id=?',
+                (device_id,)
+            ).fetchone()
+        if not snapshot: raise HTTPException(503,'Waiting for VEGA Agent data')
+        age=int(time.time())-snapshot['updated_at']
+        if age>90: raise HTTPException(503,'VEGA Agent data is stale')
+        return json.loads(snapshot['payload'])
     try: return fetch_router(row)
     except Exception: raise HTTPException(502,'Router unreachable or TLS/API authentication failed')
 
