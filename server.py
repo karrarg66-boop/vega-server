@@ -197,6 +197,6 @@ from pathlib import Path
 @app.get("/", include_in_schema=False)
 def viga_home():
     return FileResponse(
-        Path(__file__).resolve().parent / "VIGA_V31_API_Login_Phase1.html",
+        Path(__file__).resolve().parent / "VIGA_V31_Real_Data_Phase2_1_Fixed.html",
         media_type="text/html"
     )
