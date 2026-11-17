@@ -190,3 +190,13 @@ def my_devices(user=Depends(current)):
             return conn.execute('SELECT id,name,model,enabled FROM devices').fetchall()
         return conn.execute('''SELECT d.id,d.name,d.model,d.enabled FROM devices d
             JOIN assignments a ON a.device_id=d.id WHERE a.user_id=%s AND d.enabled=TRUE''',(user['id'],)).fetchall()
+
+from fastapi.responses import FileResponse
+from pathlib import Path
+
+@app.get("/", include_in_schema=False)
+def viga_home():
+    return FileResponse(
+        Path(__file__).resolve().parent / "VIGA_V31_API_Login_Phase1.html",
+        media_type="text/html"
+    )
