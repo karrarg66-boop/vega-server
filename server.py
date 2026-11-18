@@ -86,7 +86,7 @@ class NewUser(BaseModel):
     phone: str = Field(min_length=7,max_length=25,pattern=r'^[+0-9 ()-]+$')
     full_name: str = Field(min_length=1,max_length=120)
     username: str = Field(min_length=3,max_length=64,pattern=r'^[a-zA-Z0-9_.-]+$')
-    password: str = Field(min_length=12,max_length=128)
+    password: str = Field(min_length=6,max_length=128)
     device_ids: list[int] = Field(default_factory=list)
 class NewDevice(BaseModel):
     name: str = Field(min_length=1,max_length=120)
@@ -98,7 +98,7 @@ class NewDevice(BaseModel):
 class Assign(BaseModel):
     device_ids: list[int]
 class ResetViewerPassword(BaseModel):
-    password: str = Field(min_length=12,max_length=128)
+    password: str = Field(min_length=6,max_length=128)
 
 @app.get('/api/health')
 def health():
@@ -302,3 +302,27 @@ def resolve_recovery(request_id: int, user=Depends(admin)):
             raise HTTPException(404,'Recovery request not found')
         conn.execute('INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)',(user['id'],'resolve_recovery',str(request_id)))
         return row
+
+class ViewerUpdate(BaseModel):
+    full_name: str = Field(min_length=1,max_length=120)
+    username: str = Field(min_length=3,max_length=64,pattern=r'^[a-zA-Z0-9_.-]+$')
+    phone: str = Field(min_length=7,max_length=25,pattern=r'^[+0-9 ()-]+$')
+
+@app.put('/api/admin/users/{uid}')
+def edit_viewer(uid:int, body:ViewerUpdate, user=Depends(admin)):
+    with db() as conn:
+        try:
+            row=conn.execute("UPDATE users SET full_name=%s,username=%s,phone=%s WHERE id=%s AND role='viewer' RETURNING id",(body.full_name,body.username,body.phone,uid)).fetchone()
+        except psycopg.errors.UniqueViolation:
+            raise HTTPException(409,'Username already exists')
+        if not row: raise HTTPException(404,'Viewer not found')
+        conn.execute('INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)',(user['id'],'edit_viewer',str(uid)))
+    return row
+
+@app.delete('/api/admin/users/{uid}')
+def delete_viewer(uid:int,user=Depends(admin)):
+    with db() as conn:
+        row=conn.execute("DELETE FROM users WHERE id=%s AND role='viewer' RETURNING id",(uid,)).fetchone()
+        if not row: raise HTTPException(404,'Viewer not found')
+        conn.execute('INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)',(user['id'],'delete_viewer',str(uid)))
+    return {'ok':True}
