@@ -67,12 +67,14 @@ def setup():
             device_id BIGINT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
             PRIMARY KEY (user_id, device_id)
         )''')
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT")
         conn.execute('''CREATE TABLE IF NOT EXISTS recovery_requests (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, contact TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), resolved BOOLEAN DEFAULT FALSE)''')
         conn.execute('''CREATE TABLE IF NOT EXISTS audit (
             id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             actor_id BIGINT, action TEXT NOT NULL, target TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )''')
+        conn.execute("ALTER TABLE recovery_requests ADD COLUMN IF NOT EXISTS full_name TEXT")
         conn.execute('''INSERT INTO users(full_name,username,password_hash,role)
             SELECT %s,%s,%s,'admin' WHERE NOT EXISTS (SELECT 1 FROM users WHERE role='admin')''',
             ('Administrator', INITIAL_ADMIN, hash_password(INITIAL_PASSWORD)))
@@ -81,6 +83,7 @@ class Login(BaseModel):
     username: str
     password: str
 class NewUser(BaseModel):
+    phone: str = Field(min_length=7,max_length=25,pattern=r'^[+0-9 ()-]+$')
     full_name: str = Field(min_length=1,max_length=120)
     username: str = Field(min_length=3,max_length=64,pattern=r'^[a-zA-Z0-9_.-]+$')
     password: str = Field(min_length=12,max_length=128)
@@ -139,7 +142,7 @@ def me(user=Depends(current)):
 @app.get('/api/admin/users')
 def list_users(user=Depends(admin)):
     with db() as conn:
-        rows=conn.execute("SELECT id,full_name,username,enabled FROM users WHERE role='viewer' ORDER BY id DESC").fetchall()
+        rows=conn.execute("SELECT id,full_name,username,enabled,phone FROM users WHERE role='viewer' ORDER BY id DESC").fetchall()
         for row in rows:
             row['device_ids']=[r['device_id'] for r in conn.execute('SELECT device_id FROM assignments WHERE user_id=%s',(row['id'],)).fetchall()]
     return rows
@@ -156,7 +159,7 @@ def add_user(body:NewUser,user=Depends(admin)):
     with db() as conn:
         validate_devices(conn,body.device_ids)
         try:
-            row=conn.execute("INSERT INTO users(full_name,username,password_hash,role) VALUES(%s,%s,%s,'viewer') RETURNING id",(body.full_name,body.username,hash_password(body.password))).fetchone()
+            row=conn.execute("INSERT INTO users(full_name,username,password_hash,role,phone) VALUES(%s,%s,%s,'viewer',%s) RETURNING id",(body.full_name,body.username,hash_password(body.password),body.phone)).fetchone()
         except psycopg.errors.UniqueViolation:
             raise HTTPException(409,'Username already exists')
         for did in body.device_ids:
@@ -278,16 +281,17 @@ def homepage():
     return FileResponse(Path(__file__).resolve().parent / 'index.html', media_type='text/html')
 
 class RecoveryRequest(BaseModel):
-    contact: str = Field(min_length=7,max_length=120)
+    full_name: str = Field(min_length=2,max_length=120)
+    phone: str = Field(min_length=7,max_length=25,pattern=r'^[+0-9 ()-]+$')
 @app.post('/api/recovery',status_code=202)
 def recovery(body:RecoveryRequest):
     with db() as conn:
-        conn.execute("INSERT INTO recovery_requests(contact) SELECT %s WHERE NOT EXISTS (SELECT 1 FROM recovery_requests WHERE contact=%s AND created_at > NOW()-INTERVAL '1 hour')",(body.contact,body.contact))
+        conn.execute("INSERT INTO recovery_requests(contact,full_name) SELECT %s,%s WHERE NOT EXISTS (SELECT 1 FROM recovery_requests WHERE contact=%s AND created_at > NOW()-INTERVAL '1 hour')",(body.phone,body.full_name,body.phone))
     return {'ok':True}
 @app.get('/api/admin/recovery')
 def recovery_list(user=Depends(admin)):
     with db() as conn:
-        return conn.execute('SELECT id,contact,created_at,resolved FROM recovery_requests ORDER BY id DESC LIMIT 100').fetchall()
+        return conn.execute('SELECT id,contact,full_name,created_at,resolved FROM recovery_requests ORDER BY id DESC LIMIT 100').fetchall()
 
 
 @app.put('/api/admin/recovery/{request_id}/resolve')
