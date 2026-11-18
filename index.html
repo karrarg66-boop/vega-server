@@ -125,6 +125,7 @@ async function enter(){
  me=await api('/api/me');
  
  const admin=me.role==='admin';
+ document.body.classList.toggle('viga-viewer-restricted', !admin);
  for(const prefix of ['', 'viewer_']){const n=$(prefix+'vigaProfileName'),u=$(prefix+'vigaProfileUsername');if(n){n.removeAttribute('data-viga-ar');n.removeAttribute('data-viga-en');n.textContent=me.full_name;}if(u)u.textContent='@'+me.username;}
  $('vigaAdminSettings').hidden=!admin;$('vigaViewerSettings').hidden=admin;
 
@@ -138,6 +139,7 @@ async function enter(){
  show('dashboard');document.body.classList.add('viga-authenticated');$('vigaAuth').style.display='none';
 }
 function show(page){
+ if(page==='users' && me?.role!=='admin')page='dashboard';
  document.querySelectorAll('.nav-page').forEach(x=>x.style.display=x.id==='page-'+page?'block':'none');
  const dash=document.querySelector('main.traffic-wrap:not(#vigaViewerDashboard)');
  if(dash)dash.style.display=page==='dashboard'?'block':'none';
