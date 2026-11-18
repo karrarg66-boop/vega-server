@@ -1,7 +1,8 @@
 """VIGA MONITOR phase 1: PostgreSQL authentication and viewer provisioning.
 Read-only monitoring endpoints will be added in a later phase.
 """
-import os, secrets, hashlib, hmac
+import os, secrets, hashlib, hmac, base64, ipaddress
+from cryptography.fernet import Fernet, InvalidToken
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 import jwt
@@ -14,6 +15,10 @@ DATABASE_URL = os.environ.get('DATABASE_URL', '')
 SECRET = os.environ.get('VIGA_JWT_SECRET', '')
 INITIAL_ADMIN = os.environ.get('VIGA_INITIAL_ADMIN', '')
 INITIAL_PASSWORD = os.environ.get('VIGA_INITIAL_ADMIN_PASSWORD', '')
+ENCRYPTION_KEY = os.environ.get('VIGA_ENCRYPTION_KEY', '')
+if not ENCRYPTION_KEY:
+    raise RuntimeError('Set VIGA_ENCRYPTION_KEY to a Fernet key')
+CIPHER = Fernet(ENCRYPTION_KEY.encode())
 if not DATABASE_URL or len(SECRET) < 32 or not INITIAL_ADMIN or len(INITIAL_PASSWORD) < 12:
     raise RuntimeError('Set DATABASE_URL, VIGA_JWT_SECRET (32+ chars), VIGA_INITIAL_ADMIN and VIGA_INITIAL_ADMIN_PASSWORD (12+ chars)')
 app = FastAPI(title='VIGA MONITOR API', docs_url=None, redoc_url=None)
@@ -53,11 +58,16 @@ def setup():
             name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
             enabled BOOLEAN NOT NULL DEFAULT TRUE
         )''')
+        conn.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS host TEXT NOT NULL DEFAULT ''")
+        conn.execute('ALTER TABLE devices ADD COLUMN IF NOT EXISTS port INTEGER NOT NULL DEFAULT 8729')
+        conn.execute("ALTER TABLE devices ADD COLUMN IF NOT EXISTS router_user TEXT NOT NULL DEFAULT ''")
+        conn.execute('ALTER TABLE devices ADD COLUMN IF NOT EXISTS router_password_encrypted TEXT')
         conn.execute('''CREATE TABLE IF NOT EXISTS assignments (
             user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             device_id BIGINT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
             PRIMARY KEY (user_id, device_id)
         )''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS recovery_requests (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, contact TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), resolved BOOLEAN DEFAULT FALSE)''')
         conn.execute('''CREATE TABLE IF NOT EXISTS audit (
             id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
             actor_id BIGINT, action TEXT NOT NULL, target TEXT,
@@ -78,6 +88,10 @@ class NewUser(BaseModel):
 class NewDevice(BaseModel):
     name: str = Field(min_length=1,max_length=120)
     model: str = Field(default='',max_length=100)
+    host: str = Field(min_length=1,max_length=253)
+    port: int = Field(default=8729,ge=1,le=65535)
+    router_user: str = Field(min_length=1,max_length=100)
+    router_password: str = Field(min_length=1,max_length=256)
 class Assign(BaseModel):
     device_ids: list[int]
 class ResetViewerPassword(BaseModel):
@@ -153,12 +167,12 @@ def add_user(body:NewUser,user=Depends(admin)):
 @app.get('/api/admin/devices')
 def all_devices(user=Depends(admin)):
     with db() as conn:
-        return conn.execute('SELECT id,name,model,enabled FROM devices ORDER BY id DESC').fetchall()
+        return conn.execute('SELECT id,name,model,enabled,host,port,router_user FROM devices ORDER BY id DESC').fetchall()
 
 @app.post('/api/admin/devices',status_code=201)
 def add_device(body:NewDevice,user=Depends(admin)):
     with db() as conn:
-        row=conn.execute('INSERT INTO devices(name,model) VALUES(%s,%s) RETURNING id',(body.name,body.model)).fetchone()
+        row=conn.execute('INSERT INTO devices(name,model,host,port,router_user,router_password_encrypted) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id',(body.name,body.model,body.host,body.port,body.router_user,CIPHER.encrypt(body.router_password.encode()).decode())).fetchone()
         conn.execute('INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)',(user['id'],'create_device',str(row['id'])))
     return {'id':row['id'],'name':body.name}
 
@@ -196,14 +210,18 @@ def my_devices(user=Depends(current)):
 class DeviceUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     model: str = Field(default='', max_length=100)
+    host: str = Field(min_length=1,max_length=253)
+    port: int = Field(default=8729,ge=1,le=65535)
+    router_user: str = Field(min_length=1,max_length=100)
+    router_password: str | None = Field(default=None,max_length=256)
 
 @app.put('/api/admin/devices/{device_id}')
 def update_device(device_id: int, body: DeviceUpdate, user=Depends(admin)):
     with db() as conn:
-        row = conn.execute(
-            'UPDATE devices SET name=%s, model=%s WHERE id=%s RETURNING id,name,model,enabled',
-            (body.name, body.model, device_id)
-        ).fetchone()
+        if body.router_password:
+            row = conn.execute('UPDATE devices SET name=%s,model=%s,host=%s,port=%s,router_user=%s,router_password_encrypted=%s WHERE id=%s RETURNING id,name,model,enabled,host,port,router_user', (body.name,body.model,body.host,body.port,body.router_user,CIPHER.encrypt(body.router_password.encode()).decode(),device_id)).fetchone()
+        else:
+            row = conn.execute('UPDATE devices SET name=%s,model=%s,host=%s,port=%s,router_user=%s WHERE id=%s RETURNING id,name,model,enabled,host,port,router_user', (body.name,body.model,body.host,body.port,body.router_user,device_id)).fetchone()
         if row is None:
             raise HTTPException(404, 'Device not found')
         conn.execute(
@@ -258,3 +276,15 @@ from pathlib import Path
 @app.get('/', include_in_schema=False)
 def homepage():
     return FileResponse(Path(__file__).resolve().parent / 'index.html', media_type='text/html')
+
+class RecoveryRequest(BaseModel):
+    contact: str = Field(min_length=7,max_length=120)
+@app.post('/api/recovery',status_code=202)
+def recovery(body:RecoveryRequest):
+    with db() as conn:
+        conn.execute("INSERT INTO recovery_requests(contact) SELECT %s WHERE NOT EXISTS (SELECT 1 FROM recovery_requests WHERE contact=%s AND created_at > NOW()-INTERVAL '1 hour')",(body.contact,body.contact))
+    return {'ok':True}
+@app.get('/api/admin/recovery')
+def recovery_list(user=Depends(admin)):
+    with db() as conn:
+        return conn.execute('SELECT id,contact,created_at,resolved FROM recovery_requests ORDER BY id DESC LIMIT 100').fetchall()
