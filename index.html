@@ -137,7 +137,7 @@ function show(page){
  const dash=document.querySelector('main.traffic-wrap:not(#vigaViewerDashboard)');
  if(dash)dash.style.display=page==='dashboard'?'block':'none';
  const vd=$('vigaViewerDashboard');if(vd)vd.hidden=true;
- document.querySelectorAll('.nav-item').forEach(b=>b.setAttribute('aria-current',String(b.dataset.page===page)));
+ document.querySelectorAll('.nav-item').forEach(b=>{const active=b.dataset.page===page;b.classList.toggle('active',active);b.setAttribute('aria-current',active?'page':'false');});
  if(page==='dashboard' && me?.role==='viewer' && vd){
    if(dash)dash.style.display='none';vd.hidden=false;
  }
@@ -145,7 +145,14 @@ function show(page){
 async function refresh(){
  devices=await api(me.role==='admin'?'/api/admin/devices':'/api/devices');
  if(me.role==='admin')users=await api('/api/admin/users');
- renderDevices();renderUsers();if(me.role==='admin'){const rows=await api('/api/admin/recovery');$('realRecovery').innerHTML='<h3>طلبات استعادة الحساب</h3>'+(rows.map(r=>`<div class="viga-data-card">${escapeHtml(r.contact)} — ${escapeHtml(r.created_at)}</div>`).join('')||'لا توجد طلبات');}
+ renderDevices();renderUsers();if(me.role==='admin')await renderRecovery();
+}
+async function renderRecovery(){
+ const rows=await api('/api/admin/recovery'), root=$('realRecovery');
+ const fmt=new Intl.DateTimeFormat('ar-IQ',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Baghdad'});
+ root.innerHTML='<h3>طلبات استعادة الحساب</h3>'+(rows.map(r=>`<div class="viga-data-card"><strong>${escapeHtml(r.contact)}</strong><div>${escapeHtml(fmt.format(new Date(r.created_at)))}</div><div>${r.resolved?'تمت المعالجة':'بانتظار المعالجة'}</div>${r.resolved?'':`<button type="button" data-recovery-id="${r.id}">تحديد كتمت المعالجة</button>`}</div>`).join('')||'لا توجد طلبات');
+ root.querySelectorAll('[data-recovery-id]').forEach(b=>b.onclick=async()=>{if(!confirm('هل تمت مراجعة الطلب ومعالجته؟ هذا الإجراء لا يغير كلمة المرور.'))return;b.disabled=true;try{await api('/api/admin/recovery/'+b.dataset.recoveryId+'/resolve',{method:'PUT'});await renderRecovery()}catch(e){error(e);b.disabled=false}});
+ const note=document.createElement('p');note.textContent='تحقق من هوية صاحب الطلب قبل تغيير كلمة المرور من قائمة المستخدمين. إغلاق الطلب لا يغير كلمة المرور.';root.append(note);
 }
 function renderDevices(){
  const root=$('deviceList');if(!root)return;

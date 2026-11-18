@@ -288,3 +288,13 @@ def recovery(body:RecoveryRequest):
 def recovery_list(user=Depends(admin)):
     with db() as conn:
         return conn.execute('SELECT id,contact,created_at,resolved FROM recovery_requests ORDER BY id DESC LIMIT 100').fetchall()
+
+
+@app.put('/api/admin/recovery/{request_id}/resolve')
+def resolve_recovery(request_id: int, user=Depends(admin)):
+    with db() as conn:
+        row=conn.execute('UPDATE recovery_requests SET resolved=TRUE WHERE id=%s RETURNING id,resolved',(request_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404,'Recovery request not found')
+        conn.execute('INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)',(user['id'],'resolve_recovery',str(request_id)))
+        return row
