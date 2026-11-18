@@ -191,12 +191,70 @@ def my_devices(user=Depends(current)):
         return conn.execute('''SELECT d.id,d.name,d.model,d.enabled FROM devices d
             JOIN assignments a ON a.device_id=d.id WHERE a.user_id=%s AND d.enabled=TRUE''',(user['id'],)).fetchall()
 
+
+# Phase 2: administrative operations. All writes require a valid admin session.
+class DeviceUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    model: str = Field(default='', max_length=100)
+
+@app.put('/api/admin/devices/{device_id}')
+def update_device(device_id: int, body: DeviceUpdate, user=Depends(admin)):
+    with db() as conn:
+        row = conn.execute(
+            'UPDATE devices SET name=%s, model=%s WHERE id=%s RETURNING id,name,model,enabled',
+            (body.name, body.model, device_id)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, 'Device not found')
+        conn.execute(
+            'INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)',
+            (user['id'], 'update_device', str(device_id))
+        )
+    return row
+
+@app.put('/api/admin/devices/{device_id}/enabled/{enabled}')
+def set_device_enabled(device_id: int, enabled: bool, user=Depends(admin)):
+    with db() as conn:
+        row = conn.execute(
+            'UPDATE devices SET enabled=%s WHERE id=%s RETURNING id,enabled',
+            (enabled, device_id)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, 'Device not found')
+        conn.execute(
+            'INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)',
+            (user['id'], 'set_device_enabled', str(device_id))
+        )
+    return row
+
+@app.put('/api/admin/users/{uid}/enabled/{enabled}')
+def set_viewer_enabled(uid: int, enabled: bool, user=Depends(admin)):
+    with db() as conn:
+        row = conn.execute(
+            "UPDATE users SET enabled=%s WHERE id=%s AND role='viewer' RETURNING id,enabled",
+            (enabled, uid)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, 'Viewer not found')
+        conn.execute(
+            'INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)',
+            (user['id'], 'set_viewer_enabled', str(uid))
+        )
+    return row
+
+@app.get('/api/admin/audit')
+def list_audit(user=Depends(admin)):
+    with db() as conn:
+        return conn.execute(
+            'SELECT id,actor_id,action,target,created_at FROM audit ORDER BY id DESC LIMIT 100'
+        ).fetchall()
+
+
+# Serve the locked original V31 only as a design reference; never as a live dashboard.
+# The production homepage below is a functional, server-backed administration interface.
 from fastapi.responses import FileResponse
 from pathlib import Path
 
-@app.get("/", include_in_schema=False)
-def viga_home():
-    return FileResponse(
-        Path(__file__).resolve().parent / "VIGA_V31_Real_Data_Phase2_1_Fixed.html",
-        media_type="text/html"
-    )
+@app.get('/', include_in_schema=False)
+def homepage():
+    return FileResponse(Path(__file__).resolve().parent / 'index.html', media_type='text/html')
