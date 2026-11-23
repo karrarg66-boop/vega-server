@@ -390,3 +390,27 @@ def receive_metrics(
         ))
 
     return {"ok": True}
+@app.get("/api/devices/{device_id}/metrics")
+def get_device_metrics(device_id: int, user=Depends(current)):
+    with db() as conn:
+        if user["role"] != "admin":
+            allowed = conn.execute(
+                """SELECT 1 FROM assignments
+                   WHERE user_id=%s AND device_id=%s""",
+                (user["id"], device_id)
+            ).fetchone()
+            if not allowed:
+                raise HTTPException(403, "Access denied")
+
+        row = conn.execute(
+            """SELECT cpu, free_memory, total_memory,
+                      uptime, updated_at
+               FROM device_metrics
+               WHERE device_id=%s""",
+            (device_id,)
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(404, "No monitoring data yet")
+
+        return row
