@@ -371,4 +371,110 @@ if(token)enter().catch(logout);
   setTimeout(updateMetrics, 1000);
 })();
 </script>
+<script>
+/* VIGA MONITOR — Main Dashboard Live Metrics */
+(() => {
+  const DEVICE_ID = 5;
+
+  async function updateDashboard() {
+    const token = sessionStorage.getItem('viga_session_token');
+    const dashboard = document.getElementById('vigaViewerDashboard');
+
+    if (!token || !dashboard) return;
+
+    try {
+      const response = await fetch(
+        `/api/devices/${DEVICE_ID}/metrics`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store'
+        }
+      );
+
+      if (!response.ok) return;
+
+      const data = await response.json();
+      const cpu = Number(data.cpu);
+      const total = Number(data.total_memory);
+      const free = Number(data.free_memory);
+      const updated = Date.parse(data.updated_at);
+
+      if (
+        !Number.isFinite(cpu) ||
+        !Number.isFinite(total) ||
+        !Number.isFinite(free) ||
+        total <= 0
+      ) return;
+
+      const online = Number.isFinite(updated) &&
+        Math.abs(Date.now() - updated) < 60000;
+
+      const ram = Math.min(100, Math.max(0,
+        ((total - free) / total) * 100
+      ));
+
+      const uptime = String(data.uptime || '—')
+        .replace(/[&<>"']/g, '');
+
+      let panel = document.getElementById('vigaMainLiveMetrics');
+
+      if (!panel) {
+        panel = document.createElement('section');
+        panel.id = 'vigaMainLiveMetrics';
+        panel.className = 'health-section';
+
+        const heading = document.createElement('div');
+        heading.className = 'health-head';
+        heading.innerHTML =
+          '<div><h2>مراقبة الجهاز</h2>' +
+          '<p>CCR1036 — بيانات MikroTik</p></div>';
+
+        const card = document.createElement('div');
+        card.className = 'health-card';
+
+        panel.append(heading, card);
+        dashboard.prepend(panel);
+      }
+
+      panel.querySelector('.health-card').innerHTML = `
+        <div class="health-device">
+          <strong>CCR1036</strong>
+          <span class="health-demo">
+            ${online ? '🟢 متصل' : '⚪ البيانات قديمة'}
+          </span>
+        </div>
+        <div class="health-stats">
+          <div class="health-stat">
+            <div class="k">CPU</div>
+            <div class="v">${online ? cpu.toFixed(0) + '%' : '—'}</div>
+            <div class="health-track">
+              <i style="width:${online ? Math.min(100,Math.max(0,cpu)) : 0}%"></i>
+            </div>
+          </div>
+          <div class="health-stat">
+            <div class="k">RAM</div>
+            <div class="v">${online ? ram.toFixed(0) + '%' : '—'}</div>
+            <div class="health-track ram">
+              <i style="width:${online ? ram : 0}%"></i>
+            </div>
+          </div>
+        </div>
+        <div class="health-uptime">
+          وقت التشغيل: ${online ? uptime : '—'}
+        </div>
+      `;
+
+      if (online) {
+        const oldNote = dashboard.querySelector('.viga-live-note');
+        if (oldNote) oldNote.style.display = 'none';
+      }
+    } catch (e) {
+      console.warn('VIGA dashboard metrics:', e);
+    }
+  }
+
+  setInterval(updateDashboard, 10000);
+  setTimeout(updateDashboard, 1500);
+})();
+</script>
 </body></html>
