@@ -326,3 +326,67 @@ def delete_viewer(uid:int,user=Depends(admin)):
         if not row: raise HTTPException(404,'Viewer not found')
         conn.execute('INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)',(user['id'],'delete_viewer',str(uid)))
     return {'ok':True}
+# VIGA MONITOR - Secure bridge authentication
+import hmac as bridge_hmac
+
+VIGA_BRIDGE_TOKEN = os.environ.get("VIGA_BRIDGE_TOKEN", "")
+
+def verify_bridge_token(x_bridge_token: str = Header(default="")):
+    if not VIGA_BRIDGE_TOKEN or not bridge_hmac.compare_digest(
+        x_bridge_token, VIGA_BRIDGE_TOKEN
+    ):
+        raise HTTPException(401, "Unauthorized bridge")
+    return True
+    # VIGA MONITOR - Receive monitoring data
+class BridgeMetrics(BaseModel):
+    device_id: int = Field(gt=0)
+    cpu: float = Field(ge=0, le=100)
+    free_memory: int = Field(ge=0)
+    total_memory: int = Field(gt=0)
+    uptime: str = Field(max_length=100)
+
+@app.post("/api/bridge/metrics")
+def receive_metrics(
+    body: BridgeMetrics,
+    authorized=Depends(verify_bridge_token)
+):
+    with db() as conn:
+        device = conn.execute(
+            "SELECT id FROM devices WHERE id=%s AND enabled=TRUE",
+            (body.device_id,)
+        ).fetchone()
+
+        if not device:
+            raise HTTPException(404, "Device not found")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS device_metrics (
+                device_id BIGINT PRIMARY KEY
+                    REFERENCES devices(id) ON DELETE CASCADE,
+                cpu DOUBLE PRECISION NOT NULL,
+                free_memory BIGINT NOT NULL,
+                total_memory BIGINT NOT NULL,
+                uptime TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        conn.execute("""
+            INSERT INTO device_metrics
+                (device_id, cpu, free_memory, total_memory, uptime)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (device_id) DO UPDATE SET
+                cpu=EXCLUDED.cpu,
+                free_memory=EXCLUDED.free_memory,
+                total_memory=EXCLUDED.total_memory,
+                uptime=EXCLUDED.uptime,
+                updated_at=NOW()
+        """, (
+            body.device_id,
+            body.cpu,
+            body.free_memory,
+            body.total_memory,
+            body.uptime
+        ))
+
+    return {"ok": True}
