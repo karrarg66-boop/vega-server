@@ -270,4 +270,105 @@ if(token)enter().catch(logout);
  }));
  update();observer.observe(document.body,{childList:true,subtree:true,characterData:true});
 })();
-</script><script>(()=>{const b=document.getElementById('theme'),f=document.getElementById('vigaAuthFrame');function apply(day){document.body.classList.toggle('day',day);b.setAttribute('aria-checked',String(day));localStorage.setItem('viga-theme',day?'day':'night')}apply(localStorage.getItem('viga-theme')==='day');b.onclick=()=>apply(!document.body.classList.contains('day'));f.addEventListener('load',()=>{try{f.contentWindow.vigaSync(document.documentElement.lang,document.body.classList.contains('day'));const d=f.contentDocument;d.getElementById('theme').addEventListener('click',()=>apply(d.body.classList.contains('day')));d.getElementById('lang').addEventListener('click',()=>{document.querySelector('[data-viga-lang="'+d.documentElement.lang+'"]').click()})}catch(e){console.error(e)}})})();</script></body></html>
+</script><script>(()=>{const b=document.getElementById('theme'),f=document.getElementById('vigaAuthFrame');function apply(day){document.body.classList.toggle('day',day);b.setAttribute('aria-checked',String(day));localStorage.setItem('viga-theme',day?'day':'night')}apply(localStorage.getItem('viga-theme')==='day');b.onclick=()=>apply(!document.body.classList.contains('day'));f.addEventListener('load',()=>{try{f.contentWindow.vigaSync(document.documentElement.lang,document.body.classList.contains('day'));const d=f.contentDocument;d.getElementById('theme').addEventListener('click',()=>apply(d.body.classList.contains('day')));d.getElementById('lang').addEventListener('click',()=>{document.querySelector('[data-viga-lang="'+d.documentElement.lang+'"]').click()})}catch(e){console.error(e)}})})();</script>
+<script>
+/* VIGA MONITOR — Live MikroTik Metrics */
+(() => {
+  const DEVICE_ID = 5;
+  const TOKEN_KEY = 'viga_session_token';
+
+  function escapeHTML(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[c]));
+  }
+
+  function formatMB(bytes) {
+    return (bytes / 1048576).toFixed(0) + ' MB';
+  }
+
+  async function updateMetrics() {
+    const token = sessionStorage.getItem(TOKEN_KEY);
+    if (!token) return;
+
+    try {
+      const response = await fetch(
+        '/api/devices/' + DEVICE_ID + '/metrics',
+        {
+          headers: {
+            Authorization: 'Bearer ' + token
+          },
+          cache: 'no-store'
+        }
+      );
+
+      if (!response.ok) return;
+
+      const data = await response.json();
+      const cpu = Number(data.cpu);
+      const total = Number(data.total_memory);
+      const free = Number(data.free_memory);
+
+      if (![cpu, total, free].every(Number.isFinite) || total <= 0) return;
+
+      const updated = Date.parse(data.updated_at);
+      const online = Number.isFinite(updated) &&
+        Math.abs(Date.now() - updated) < 60000;
+
+      const used = Math.max(0, total - free);
+      const ramPercent = Math.min(100, used / total * 100);
+
+      const markup = `
+        <div style="padding:16px;border:1px solid var(--border);
+                    border-radius:16px;margin-top:14px;
+                    background:var(--bar);direction:rtl">
+          <strong>CCR1036 — مراقبة مباشرة</strong>
+          <p>الحالة: ${online ? '🟢 متصل' : '⚪ البيانات قديمة'}</p>
+          <p>CPU: ${online ? cpu.toFixed(0) + '%' : '—'}</p>
+          <p>RAM: ${online ? ramPercent.toFixed(0) + '%' : '—'}
+            (${online ? formatMB(used) + ' / ' + formatMB(total) : '—'})
+          </p>
+          <p>وقت التشغيل: ${online ? escapeHTML(data.uptime) : '—'}</p>
+        </div>`;
+
+      const viewer = document.getElementById('vigaViewerDashboard');
+      if (viewer && !viewer.hidden) {
+        let panel = document.getElementById('vigaLiveMetrics');
+        if (!panel) {
+          panel = document.createElement('div');
+          panel.id = 'vigaLiveMetrics';
+          viewer.appendChild(panel);
+        }
+        panel.innerHTML = markup;
+      }
+
+      const list = document.getElementById('deviceList');
+      if (list) {
+        const card = [...list.children].find(
+          el => el.textContent.includes('رقم الجهاز: ' + DEVICE_ID)
+        );
+
+        if (card) {
+          let panel = card.querySelector('[data-viga-live]');
+          if (!panel) {
+            panel = document.createElement('div');
+            panel.dataset.vigaLive = 'true';
+            card.appendChild(panel);
+          }
+          panel.innerHTML = markup;
+        }
+      }
+    } catch (error) {
+      console.warn('VIGA metrics:', error);
+    }
+  }
+
+  setInterval(updateMetrics, 10000);
+  setTimeout(updateMetrics, 1000);
+})();
+</script>
+</body></html>
