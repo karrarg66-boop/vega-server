@@ -414,3 +414,21 @@ def get_device_metrics(device_id: int, user=Depends(current)):
             raise HTTPException(404, "No monitoring data yet")
 
         return row
+
+@app.delete("/api/admin/devices/{device_id}")
+def delete_device(device_id: int, user=Depends(admin)):
+    with db() as conn:
+        row = conn.execute(
+            "DELETE FROM devices WHERE id=%s RETURNING id",
+            (device_id,)
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(404, "Device not found")
+
+        conn.execute(
+            "INSERT INTO audit(actor_id,action,target) VALUES(%s,%s,%s)",
+            (user["id"], "delete_device", str(device_id))
+        )
+
+    return {"ok": True}
