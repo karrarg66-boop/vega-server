@@ -685,7 +685,7 @@ if(token)enter().catch(logout);
 
           if (!response.ok) throw new Error('Delete failed');
 
-          location.reload();
+          location.remove();
 
         } catch (error) {
           alert(tr('تعذر حذف الجهاز','Unable to delete device'));
