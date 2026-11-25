@@ -477,4 +477,228 @@ if(token)enter().catch(logout);
   setTimeout(updateDashboard, 1500);
 })();
 </script>
+ 
+<script>
+/* VIGA MONITOR — Three requested improvements */
+(() => {
+  const $ = id => document.getElementById(id);
+  const english = () => document.documentElement.lang === 'en';
+  const tr = (ar, en) => english() ? en : ar;
+
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes vigaSpin {
+      to { transform: rotate(360deg); }
+    }
+    .viga-new-overlay {
+      position:fixed;
+      inset:0;
+      z-index:99999;
+      background:#0009;
+      backdrop-filter:blur(5px);
+      display:grid;
+      place-items:center;
+      padding:20px;
+    }
+    .viga-new-dialog {
+      width:min(100%,380px);
+      background:var(--bar);
+      color:var(--text);
+      border:1px solid var(--border);
+      border-radius:22px;
+      padding:28px;
+      text-align:center;
+      box-shadow:0 20px 60px #0005;
+    }
+    .viga-new-actions {
+      display:flex;
+      gap:12px;
+      margin-top:24px;
+    }
+    .viga-new-actions button {
+      flex:1;
+      padding:13px;
+      border-radius:12px;
+      font:inherit;
+      font-weight:bold;
+      cursor:pointer;
+    }
+    .viga-new-yes {
+      background:#c52d43;
+      color:white;
+      border:0;
+    }
+    .viga-new-no {
+      background:var(--bg);
+      color:var(--text);
+      border:1px solid var(--border);
+    }
+    .viga-new-delete {
+      color:#ef747e!important;
+      border:1px solid #ef747e66!important;
+      background:transparent!important;
+    }
+    .viga-new-spinner {
+      width:36px;
+      height:36px;
+      border:3px solid var(--border);
+      border-top-color:var(--accent);
+      border-radius:50%;
+      animation:vigaSpin .8s linear infinite;
+      margin:0 auto 18px;
+    }
+  `;
+  document.head.appendChild(style);
+
+  function confirmAction(message) {
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'viga-new-overlay';
+      overlay.innerHTML = `
+        <div class="viga-new-dialog" role="dialog" aria-modal="true">
+          <div style="font-size:38px;color:var(--accent)">!</div>
+          <h3>${message}</h3>
+          <div class="viga-new-actions">
+            <button class="viga-new-yes">${tr('نعم','Yes')}</button>
+            <button class="viga-new-no">${tr('لا','No')}</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+
+      function finish(result) {
+        overlay.remove();
+        resolve(result);
+      }
+
+      overlay.querySelector('.viga-new-yes').onclick =
+        () => finish(true);
+
+      overlay.querySelector('.viga-new-no').onclick =
+        () => finish(false);
+
+      overlay.onclick = e => {
+        if (e.target === overlay) finish(false);
+      };
+    });
+  }
+
+  /* Login loading */
+  const originalSignIn = window.vigaSignIn;
+  let signingIn = false;
+
+  if (typeof originalSignIn === 'function') {
+    window.vigaSignIn = async function(...args) {
+      if (signingIn) throw new Error('Login in progress');
+      signingIn = true;
+
+      const overlay = document.createElement('div');
+      overlay.className = 'viga-new-overlay';
+      overlay.innerHTML = `
+        <div class="viga-new-dialog" role="status">
+          <div class="viga-new-spinner"></div>
+          <h3>${tr('جارٍ تسجيل الدخول...','Signing in...')}</h3>
+          <p style="color:var(--muted)">
+            ${tr('يرجى الانتظار قليلاً','Please wait')}
+          </p>
+        </div>`;
+
+      document.body.appendChild(overlay);
+
+      try {
+        return await originalSignIn.apply(this,args);
+      } finally {
+        overlay.remove();
+        signingIn = false;
+      }
+    };
+  }
+
+  /* Logout confirmation */
+  document.addEventListener('click', async e => {
+    const button = e.target.closest(
+      '#vigaLogout,#viewer_vigaLogout'
+    );
+
+    if (!button) return;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    const accepted = await confirmAction(
+      tr('هل تريد تسجيل الخروج؟','Do you want to log out?')
+    );
+
+    if (accepted) {
+      sessionStorage.removeItem('viga_session_token');
+      location.reload();
+    }
+  }, true);
+
+  /* Admin device deletion */
+  function addDeleteButtons() {
+    const root = $('deviceList');
+
+    if (!root) return;
+
+    if (document.body.classList.contains(
+      'viga-viewer-restricted'
+    )) return;
+
+    root.querySelectorAll('[data-device-edit]').forEach(edit => {
+      const card = edit.closest('.viga-data-card');
+
+      if (!card || card.querySelector('.viga-new-delete')) return;
+
+      const id = edit.dataset.deviceEdit;
+      const button = document.createElement('button');
+
+      button.type = 'button';
+      button.className = 'viga-new-delete';
+      button.textContent = tr('حذف الجهاز','Delete device');
+
+      button.onclick = async () => {
+        const accepted = await confirmAction(
+          tr(
+            'هل تريد حذف هذا الجهاز نهائياً؟',
+            'Permanently delete this device?'
+          )
+        );
+
+        if (!accepted) return;
+
+        button.disabled = true;
+
+        try {
+          const token = sessionStorage.getItem(
+            'viga_session_token'
+          );
+
+          const response = await fetch(
+            '/api/admin/devices/' + encodeURIComponent(id),
+            {
+              method:'DELETE',
+              headers:{
+                Authorization:'Bearer ' + token
+              }
+            }
+          );
+
+          if (!response.ok) throw new Error('Delete failed');
+
+          location.reload();
+
+        } catch (error) {
+          alert(tr('تعذر حذف الجهاز','Unable to delete device'));
+          button.disabled = false;
+        }
+      };
+
+      edit.after(button);
+    });
+  }
+
+  setInterval(addDeleteButtons,1000);
+  addDeleteButtons();
+})();
+</script>
 </body></html>
