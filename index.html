@@ -701,4 +701,54 @@ if(token)enter().catch(logout);
   addDeleteButtons();
 })();
 </script>
+ 
+<script>
+(() => {
+  const frame = document.getElementById('vigaAuthFrame');
+
+  function setup() {
+    const d = frame.contentDocument;
+    const btn = d.getElementById('submit');
+    if (!btn || d.getElementById('loginLoadingFix')) return;
+
+    const css = d.createElement('style');
+    css.id = 'loginLoadingFix';
+    css.textContent = `
+      @keyframes loginSpin {
+        to { transform: rotate(360deg); }
+      }
+      #submit:disabled::before {
+        content: '';
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid #ffffff66;
+        border-top-color: white;
+        border-radius: 50%;
+        margin-inline-end: 10px;
+        vertical-align: middle;
+        animation: loginSpin .7s linear infinite;
+      }
+    `;
+    d.head.appendChild(css);
+
+    new MutationObserver(() => {
+      const en = d.documentElement.lang === 'en';
+      const label = btn.disabled
+        ? (en ? 'Signing in...' : 'جارٍ تسجيل الدخول...')
+        : (en ? 'Sign in' : 'تسجيل الدخول');
+
+      if (btn.textContent !== label)
+        btn.textContent = label;
+    }).observe(btn, {
+      attributes: true,
+      attributeFilter: ['disabled'],
+      childList: true
+    });
+  }
+
+  frame.addEventListener('load', setup);
+  setup();
+})();
+</script>
 </body></html>
