@@ -439,8 +439,6 @@ document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=
           </p>
         </div>`;
 
-      document.body.appendChild(overlay);
-
       try {
         return await originalSignIn.apply(this,args);
       } finally {
@@ -553,37 +551,31 @@ document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=
     const css = d.createElement('style');
     css.id = 'loginLoadingFix';
     css.textContent = `
-      @keyframes loginSpin {
-        to { transform: rotate(360deg); }
-      }
-      #submit:disabled::before {
-        content: '';
-        display: inline-block;
-        width: 16px;
-        height: 16px;
-        border: 2px solid #ffffff66;
-        border-top-color: white;
-        border-radius: 50%;
-        margin-inline-end: 10px;
-        vertical-align: middle;
-        animation: loginSpin .7s linear infinite;
-      }
+      #submit:disabled::before { content:none!important; }
+      .viga-login-caption {display:none;text-align:center;color:var(--muted);font-size:13px;margin-top:10px;}
+      body.viga-signing .viga-login-caption {display:block;}
+      body.viga-signing .brand .symbol svg path {stroke:#d899ff;stroke-width:.8;stroke-linejoin:round;stroke-dasharray:350;animation:vigaLogoDraw 2.5s ease-in-out infinite;}
+      @keyframes vigaLogoDraw {0%{stroke-dashoffset:350;fill-opacity:0}65%,85%{stroke-dashoffset:0;fill-opacity:1}100%{stroke-dashoffset:350;fill-opacity:0}}
+      @media(prefers-reduced-motion:reduce){body.viga-signing .brand .symbol svg path{animation:none;}}
     `;
     d.head.appendChild(css);
 
-    new MutationObserver(() => {
+    const caption = d.createElement('div');
+    caption.className = 'viga-login-caption';
+    caption.setAttribute('role','status');
+    d.querySelector('.brand').appendChild(caption);
+    function sync() {
       const en = d.documentElement.lang === 'en';
-      const label = btn.disabled
-        ? (en ? 'Signing in...' : 'جارٍ تسجيل الدخول...')
-        : (en ? 'Sign in' : 'تسجيل الدخول');
-
-      if (btn.textContent !== label)
-        btn.textContent = label;
-    }).observe(btn, {
-      attributes: true,
-      attributeFilter: ['disabled'],
-      childList: true
-    });
+      d.body.classList.toggle('viga-signing',btn.disabled);
+      const label = en ? 'Sign in' : 'تسجيل الدخول';
+      if(btn.textContent !== label) btn.textContent = label;
+      const message = btn.disabled ? (en ? 'Signing in...' : 'جارٍ تسجيل الدخول...') : '';
+      if(caption.textContent !== message) caption.textContent = message;
+    }
+    const observer = new MutationObserver(sync);
+    observer.observe(btn,{attributes:true,attributeFilter:['disabled'],childList:true});
+    observer.observe(d.documentElement,{attributes:true,attributeFilter:['lang']});
+    sync();
   }
 
   frame?.addEventListener('load', setup);
