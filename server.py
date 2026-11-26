@@ -407,7 +407,7 @@ def my_devices(user=Depends(current)):
             ).fetchall()
 
         return conn.execute('''
-            SELECT d.id,d.name,d.model,d.enabled
+            SELECT d.id,d.name,d.model,d.enabled,d.router_user
             FROM devices d
             JOIN assignments a ON a.device_id=d.id
             WHERE a.user_id=%s AND d.enabled=TRUE
@@ -757,3 +757,57 @@ def delete_device(device_id: int, user=Depends(admin)):
         )
 
     return {"ok": True}
+
+# Internal support; existing tables and routes are unchanged.
+from typing import Literal
+
+@app.on_event('startup')
+def setup_support():
+    with db() as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS support_requests (
+            id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL, subject TEXT NOT NULL, message TEXT NOT NULL,
+            reply TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'new',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+
+class SupportCreate(BaseModel):
+    kind: Literal['problem','idea','feature']
+    subject: str = Field(min_length=1,max_length=150)
+    message: str = Field(min_length=1,max_length=4000)
+
+class SupportReply(BaseModel):
+    reply: str = Field(max_length=4000)
+    status: Literal['new','processing','resolved']
+
+@app.get('/api/support')
+def support_list(user=Depends(current)):
+    with db() as conn:
+        sql = 'SELECT s.*,u.username,u.full_name FROM support_requests s JOIN users u ON u.id=s.user_id'
+        if user['role']=='admin':
+            return conn.execute(sql+' ORDER BY s.id DESC').fetchall()
+        return conn.execute(sql+' WHERE s.user_id=%s ORDER BY s.id DESC',(user['id'],)).fetchall()
+
+@app.post('/api/support',status_code=201)
+def support_create(body: SupportCreate,user=Depends(current)):
+    if user['role']!='viewer':
+        raise HTTPException(403,'Viewer only')
+    if not body.subject.strip() or not body.message.strip():
+        raise HTTPException(422,'Empty request')
+    with db() as conn:
+        return conn.execute('INSERT INTO support_requests(user_id,kind,subject,message) VALUES(%s,%s,%s,%s) RETURNING id',(user['id'],body.kind,body.subject.strip(),body.message.strip())).fetchone()
+
+@app.put('/api/admin/support/{rid}')
+def support_reply(rid:int,body:SupportReply,user=Depends(admin)):
+    with db() as conn:
+        row=conn.execute('UPDATE support_requests SET reply=%s,status=%s,updated_at=NOW() WHERE id=%s RETURNING id',(body.reply,body.status,rid)).fetchone()
+        if not row: raise HTTPException(404,'Request not found')
+        return row
+
+@app.delete('/api/admin/support/{rid}')
+def support_delete(rid:int,user=Depends(admin)):
+    with db() as conn:
+        row=conn.execute('DELETE FROM support_requests WHERE id=%s RETURNING id',(rid,)).fetchone()
+        if not row: raise HTTPException(404,'Request not found')
+        return {'ok':True}
