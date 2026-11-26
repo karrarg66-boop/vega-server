@@ -811,3 +811,55 @@ def support_delete(rid:int,user=Depends(admin)):
         row=conn.execute('DELETE FROM support_requests WHERE id=%s RETURNING id',(rid,)).fetchone()
         if not row: raise HTTPException(404,'Request not found')
         return {'ok':True}
+
+# Historical monitoring, sampled once per minute; no router configuration changes.
+@app.on_event('startup')
+def setup_history():
+    with db() as c:
+        c.execute('''CREATE TABLE IF NOT EXISTS viga_history(device_id BIGINT REFERENCES devices(id) ON DELETE CASCADE, stamp TIMESTAMPTZ NOT NULL, cpu DOUBLE PRECISION, ram DOUBLE PRECISION, temp DOUBLE PRECISION, subscribers INTEGER, rx DOUBLE PRECISION, tx DOUBLE PRECISION, PRIMARY KEY(device_id,stamp))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS viga_alert_hidden(user_id BIGINT REFERENCES users(id) ON DELETE CASCADE, alert_key TEXT, PRIMARY KEY(user_id,alert_key))''')
+        c.execute('''CREATE OR REPLACE FUNCTION viga_capture() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE p jsonb; r double precision; t double precision; BEGIN
+        FOR p IN SELECT value FROM jsonb_array_elements(CASE WHEN jsonb_typeof(NEW.interfaces)='array' THEN NEW.interfaces ELSE '[]'::jsonb END) LOOP
+          IF lower(COALESCE(p->>'name',p->>'interface','')) ~ '^(ether1|tower|tower uplink|01[-_ ]tower[-_ ]out|tower[-_ ]out[-_ ]01)$' THEN
+            IF COALESCE(p->>'tx-bits-per-second',p->>'tx_bits_per_second','') ~ '^[0-9]+(\\.[0-9]+)?$' THEN r=COALESCE(p->>'tx-bits-per-second',p->>'tx_bits_per_second')::double precision; END IF;
+            IF COALESCE(p->>'rx-bits-per-second',p->>'rx_bits_per_second','') ~ '^[0-9]+(\\.[0-9]+)?$' THEN t=COALESCE(p->>'rx-bits-per-second',p->>'rx_bits_per_second')::double precision; END IF;
+          END IF;
+        END LOOP;
+        INSERT INTO viga_history VALUES(NEW.device_id,date_trunc('minute',NEW.updated_at),NEW.cpu,100.0*(1-NEW.free_memory::double precision/NULLIF(NEW.total_memory,0)),NEW.cpu_temperature,CASE WHEN jsonb_typeof(NEW.pppoe)='array' THEN jsonb_array_length(NEW.pppoe) END,r,t) ON CONFLICT DO NOTHING;
+        RETURN NEW; END $$''')
+        c.execute('DROP TRIGGER IF EXISTS viga_capture_trigger ON device_metrics')
+        c.execute('CREATE TRIGGER viga_capture_trigger AFTER INSERT OR UPDATE ON device_metrics FOR EACH ROW EXECUTE FUNCTION viga_capture()')
+
+@app.get('/api/history/{device_id}')
+def history(device_id:int, days:int=1,user=Depends(current)):
+    if days not in (1,7,30): raise HTTPException(422,'Invalid period')
+    if device_id not in [d['id'] for d in my_devices(user)]: raise HTTPException(403,'Access denied')
+    with db() as c:
+        rows=c.execute('''SELECT * FROM viga_history WHERE device_id=%s AND stamp>=NOW()-(%s * interval '1 day') ORDER BY stamp''',(device_id,days)).fetchall()
+    return rows
+
+@app.get('/api/monitor-alerts')
+def monitor_alerts(user=Depends(current)):
+    result=[]
+    for d in my_devices(user):
+        if not d['enabled']: continue
+        try: m=get_device_metrics(d['id'],user)
+        except HTTPException: continue
+        stale=(datetime.now(timezone.utc)-m['updated_at']).total_seconds()>60
+        checks=[('offline',stale,'critical',None),('cpu',not stale and m['cpu']>=90,'warning',m['cpu']),('ram',not stale and m['total_memory']>0 and 100*(1-m['free_memory']/m['total_memory'])>=90,'warning',round(100*(1-m['free_memory']/m['total_memory']),1)),('temp',not stale and m['cpu_temperature'] is not None and m['cpu_temperature']>=75,'warning',m['cpu_temperature'])]
+        for kind,active,level,value in checks:
+            if active: result.append(dict(key=f"{d['id']}:{kind}",kind=kind,level=level,value=value,name=d['name'],model=d['model'],stamp=m['updated_at']))
+    with db() as c:
+        hidden={r['alert_key'] for r in c.execute('SELECT alert_key FROM viga_alert_hidden WHERE user_id=%s',(user['id'],)).fetchall()}
+        active=[a['key'] for a in result]
+        c.execute('DELETE FROM viga_alert_hidden WHERE user_id=%s AND NOT(alert_key=ANY(%s::text[]))',(user['id'],active))
+    return [a for a in result if a['level']=='critical' or a['key'] not in hidden]
+
+class AlertDismiss(BaseModel):
+    keys:list[str]=Field(max_length=1000)
+@app.post('/api/monitor-alerts/dismiss')
+def dismiss_alerts(body:AlertDismiss,user=Depends(current)):
+    allowed={a['key'] for a in monitor_alerts(user) if a['level']!='critical'}
+    with db() as c:
+        for k in set(body.keys)&allowed: c.execute('INSERT INTO viga_alert_hidden VALUES(%s,%s) ON CONFLICT DO NOTHING',(user['id'],k))
+    return {'ok':True}
