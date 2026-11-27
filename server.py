@@ -863,3 +863,42 @@ def dismiss_alerts(body:AlertDismiss,user=Depends(current)):
     with db() as c:
         for k in set(body.keys)&allowed: c.execute('INSERT INTO viga_alert_hidden VALUES(%s,%s) ON CONFLICT DO NOTHING',(user['id'],k))
     return {'ok':True}
+
+# VIGA AI — admin-only demo, no access to real monitoring data.
+import json
+import urllib.request
+import urllib.error
+import threading
+import time
+
+_ai_lock = threading.Lock()
+_ai_last = 0.0
+
+class AIQuestion(BaseModel):
+    message: str = Field(min_length=1, max_length=1500)
+
+@app.post('/api/ai/chat')
+def ai_chat(body: AIQuestion, user=Depends(admin)):
+    global _ai_last
+    key = os.environ.get('GEMINI_API_KEY', '').strip()
+    if not key:
+        raise HTTPException(503, 'Gemini key is not configured')
+    with _ai_lock:
+        now = time.monotonic()
+        if now - _ai_last < 8:
+            raise HTTPException(429, 'Wait a few seconds before trying again')
+        _ai_last = now
+    payload = {'systemInstruction': {'parts': [{'text': 'You are VIGA AI, a read-only network monitoring assistant. Reply in the language of the question, Iraqi Arabic when appropriate. This is a demo; no live data is available. Never claim to have accessed or changed a router. Do not invent live metrics.'}]}, 'contents': [{'parts': [{'text': body.message}]}], 'generationConfig': {'maxOutputTokens': 1024}}
+    req = urllib.request.Request('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent', data=json.dumps(payload).encode(), headers={'Content-Type':'application/json','x-goog-api-key':key}, method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=35) as response:
+            data = json.load(response)
+        parts = data.get('candidates', [{}])[0].get('content', {}).get('parts', [])
+        answer = '\n'.join(p['text'] for p in parts if 'text' in p and not p.get('thought'))
+        if not answer.strip():
+            raise HTTPException(502, 'Gemini returned no answer')
+        return {'reply': answer}
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(429 if exc.code == 429 else 502, 'Gemini request failed: HTTP '+str(exc.code)) from None
+    except (OSError, ValueError, IndexError):
+        raise HTTPException(502, 'Gemini connection failed') from None
