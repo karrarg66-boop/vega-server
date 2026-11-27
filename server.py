@@ -889,16 +889,36 @@ def ai_chat(body: AIQuestion, user=Depends(admin)):
             raise HTTPException(429, 'Wait a few seconds before trying again')
         _ai_last = now
     payload = {'systemInstruction': {'parts': [{'text': 'You are VIGA AI, a read-only network monitoring assistant. Reply in the language of the question, Iraqi Arabic when appropriate. This is a demo; no live data is available. Never claim to have accessed or changed a router. Do not invent live metrics.'}]}, 'contents': [{'parts': [{'text': body.message}]}], 'generationConfig': {'maxOutputTokens': 1024}}
-    req = urllib.request.Request('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent', data=json.dumps(payload).encode(), headers={'Content-Type':'application/json','x-goog-api-key':key}, method='POST')
-    try:
-        with urllib.request.urlopen(req, timeout=35) as response:
-            data = json.load(response)
-        parts = data.get('candidates', [{}])[0].get('content', {}).get('parts', [])
-        answer = '\n'.join(p['text'] for p in parts if 'text' in p and not p.get('thought'))
-        if not answer.strip():
-            raise HTTPException(502, 'Gemini returned no answer')
-        return {'reply': answer}
-    except urllib.error.HTTPError as exc:
-        raise HTTPException(429 if exc.code == 429 else 502, 'Gemini request failed: HTTP '+str(exc.code)) from None
-    except (OSError, ValueError, IndexError):
-        raise HTTPException(502, 'Gemini connection failed') from None
+    # Use the lightweight alias first, then the original Flash alias.
+    import logging
+    logger = logging.getLogger("uvicorn.error")
+    models = ("gemini-flash-lite-latest", "gemini-flash-latest")
+    last_error = "Unavailable"
+    for attempt, model in enumerate(models):
+        if attempt:
+            time.sleep(1)
+        req = urllib.request.Request(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "x-goog-api-key": key},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=12) as response:
+                data = json.load(response)
+            candidates = data.get("candidates") or []
+            parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+            answer = "\n".join(p["text"] for p in parts if "text" in p and not p.get("thought"))
+            if answer.strip():
+                return {"reply": answer}
+            last_error = "Empty response"
+        except urllib.error.HTTPError as exc:
+            last_error = f"HTTP {exc.code}"
+            logger.warning("VIGA AI: %s returned %s", model, last_error)
+            if exc.code in (400, 401, 403):
+                raise HTTPException(502, f"Gemini request failed: {last_error}") from None
+        except (OSError, ValueError, IndexError) as exc:
+            last_error = type(exc).__name__
+            logger.warning("VIGA AI: %s failed: %s", model, last_error)
+    raise HTTPException(429 if last_error == "HTTP 429" else 502,
+                        f"Gemini unavailable after fallback: {last_error}")
