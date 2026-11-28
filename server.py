@@ -8,7 +8,7 @@ import jwt
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-from fastapi import FastAPI, Depends, Header, HTTPException
+from fastapi import Request, Response, FastAPI, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -157,6 +157,8 @@ def setup():
 class Login(BaseModel):
     username: str
     password: str
+    remember: bool = False
+    saved: bool = False
 
 
 class NewUser(BaseModel):
@@ -191,33 +193,49 @@ def health():
     return {'ok': True, 'service': 'VIGA MONITOR'}
 
 
+@app.on_event('startup')
+def setup_login_devices():
+    with db() as c:
+        c.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS login_limit INTEGER NOT NULL DEFAULT 0')
+        c.execute("""CREATE TABLE IF NOT EXISTS login_devices (id TEXT PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, secret_hash TEXT NOT NULL, password_version TEXT NOT NULL, agent TEXT NOT NULL, remembered BOOLEAN NOT NULL, last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+
+def digest(value):
+    return hashlib.sha256(value.encode()).hexdigest()
+
 @app.post('/api/login')
-def login(body: Login):
-    with db() as conn:
-        row = conn.execute(
-            'SELECT * FROM users WHERE username=%s',
-            (body.username,)
-        ).fetchone()
+def login(body: Login, request: Request, response: Response):
+    cookie = request.cookies.get('viga_device', '')
+    with db() as c:
+        row = c.execute('SELECT * FROM users WHERE username=%s FOR UPDATE',(body.username,)).fetchone()
+        if not row or not row['enabled']:
+            raise HTTPException(401,'Incorrect credentials')
+        version = digest(row['password_hash'])
+        c.execute('DELETE FROM login_devices WHERE user_id=%s AND password_version<>%s',(row['id'],version))
+        device = c.execute('SELECT * FROM login_devices WHERE user_id=%s AND secret_hash=%s',(row['id'],digest(cookie))).fetchone() if cookie else None
+        if body.saved:
+            if not device or not device['remembered'] or device['last_seen'] < datetime.now(timezone.utc)-timedelta(days=30):
+                raise HTTPException(401,'Saved login expired')
+        elif not verify_password(body.password,row['password_hash']):
+            raise HTTPException(401,'Incorrect credentials')
+        if not device:
+            count=c.execute('SELECT count(*) AS n FROM login_devices WHERE user_id=%s',(row['id'],)).fetchone()['n']
+            if row['login_limit'] and count>=row['login_limit']:
+                raise HTTPException(409,'Device limit reached')
+            sid=secrets.token_hex(16)
+        else:
+            sid=device['id']
+        raw=secrets.token_urlsafe(32)
+        c.execute("""INSERT INTO login_devices(id,user_id,secret_hash,password_version,agent,remembered) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET secret_hash=EXCLUDED.secret_hash, remembered=EXCLUDED.remembered,last_seen=NOW()""",(sid,row['id'],digest(raw),version,request.headers.get('user-agent','Unknown')[:300],body.remember))
+    response.set_cookie('viga_device',raw,max_age=30*86400 if body.remember else 365*86400,httponly=True,secure=True,samesite='strict')
+    now=datetime.now(timezone.utc)
+    token=jwt.encode({'sub':str(row['id']),'role':row['role'],'sid':sid,'iat':now,'exp':now+timedelta(hours=8)},SECRET,algorithm='HS256')
+    return {'access_token':token,'token_type':'bearer','role':row['role'],'full_name':row['full_name'],'must_change_password':row['must_change_password']}
 
-    if not row or not row['enabled'] or not verify_password(body.password, row['password_hash']):
-        raise HTTPException(401, 'Incorrect credentials')
-
-    now = datetime.now(timezone.utc)
-
-    token = jwt.encode({
-        'sub': str(row['id']),
-        'role': row['role'],
-        'iat': now,
-        'exp': now + timedelta(hours=8)
-    }, SECRET, algorithm='HS256')
-
-    return {
-        'access_token': token,
-        'token_type': 'bearer',
-        'role': row['role'],
-        'full_name': row['full_name'],
-        'must_change_password': row['must_change_password']
-    }
+@app.post('/api/forget-login')
+def forget_login(request: Request):
+    with db() as c:
+        c.execute('UPDATE login_devices SET remembered=FALSE WHERE secret_hash=%s',(digest(request.cookies.get('viga_device','')),))
+    return {'ok':True}
 
 
 def current(authorization: str = Header(default='')):
@@ -235,13 +253,17 @@ def current(authorization: str = Header(default='')):
 
     with db() as conn:
         user = conn.execute(
-            'SELECT id,username,full_name,role,enabled,must_change_password FROM users WHERE id=%s',
+            'SELECT id,username,full_name,role,enabled,must_change_password,password_hash FROM users WHERE id=%s',
             (uid,)
         ).fetchone()
 
     if not user or not user['enabled'] or user['role'] != claims.get('role'):
         raise HTTPException(401, 'Account unavailable')
 
+    with db() as c:
+        if not c.execute('SELECT 1 FROM login_devices WHERE id=%s AND user_id=%s AND password_version=%s',(claims.get('sid'),uid,digest(user['password_hash']))).fetchone():
+            raise HTTPException(401,'Session revoked')
+    user.pop('password_hash',None)
     return user
 
 
@@ -1012,3 +1034,31 @@ def ai_chat(body: AIQuestion, user=Depends(current)):
             logger.warning("VIGA AI: %s failed: %s", model, last_error)
     raise HTTPException(429 if last_error == "HTTP 429" else 502,
                         f"Gemini unavailable after fallback: {last_error}")
+
+
+class LoginLimit(BaseModel):
+    limit: int = Field(ge=0,le=100)
+
+@app.get('/api/admin/users/{uid}/login-devices')
+def login_devices(uid:int,user=Depends(admin)):
+    with db() as c:
+        row=c.execute("SELECT login_limit,password_hash FROM users WHERE id=%s AND role='viewer'",(uid,)).fetchone()
+        if not row: raise HTTPException(404,'Viewer not found')
+        rows=c.execute('SELECT id,agent,last_seen,remembered FROM login_devices WHERE user_id=%s AND password_version=%s ORDER BY last_seen DESC',(uid,digest(row['password_hash']))).fetchall()
+        return {'limit':row['login_limit'],'devices':rows}
+
+@app.put('/api/admin/users/{uid}/login-devices')
+def set_login_limit(uid:int,body:LoginLimit,user=Depends(admin)):
+    with db() as c:
+        row=c.execute("SELECT password_hash FROM users WHERE id=%s AND role='viewer' FOR UPDATE",(uid,)).fetchone()
+        if not row: raise HTTPException(404,'Viewer not found')
+        n=c.execute('SELECT count(*) AS n FROM login_devices WHERE user_id=%s AND password_version=%s',(uid,digest(row['password_hash']))).fetchone()['n']
+        if body.limit and n>body.limit: raise HTTPException(409,'Remove excess devices first')
+        c.execute('UPDATE users SET login_limit=%s WHERE id=%s',(body.limit,uid))
+    return {'ok':True}
+
+@app.delete('/api/admin/users/{uid}/login-devices/{sid}')
+def revoke_login_device(uid:int,sid:str,user=Depends(admin)):
+    with db() as c:
+        c.execute("DELETE FROM login_devices WHERE id=%s AND user_id IN (SELECT id FROM users WHERE id=%s AND role='viewer')",(sid,uid))
+    return {'ok':True}
